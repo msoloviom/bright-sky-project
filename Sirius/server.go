@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"time"
 
 	"./ca"
 	"github.com/huandu/go-sqlbuilder"
@@ -16,23 +17,23 @@ import (
 )
 
 type Supplier struct {
-	ID   int
+	ID   sql.NullInt64
 	Name sql.NullString
 	Cert sql.NullString
 }
 
 type Investor struct {
-	ID   int
+	ID   int64
 	Name sql.NullString
 	Cert sql.NullString
 }
 
 type Contract struct {
-	ID       int
+	ID       int64
 	Supplier *Supplier
 	Investor *Investor
-	Stage    sql.NullInt64
-	Created  sql.NullInt64
+	Stage    int64
+	Created  int64
 
 	Title       sql.NullString
 	Description sql.NullString
@@ -43,24 +44,34 @@ type Contract struct {
 	InvestorSignature []byte
 }
 
+type Timestamp time.Time
+
+type ContractQuery struct {
+	InvestorID  int64
+	Title       string
+	Description string
+	Amount      int64
+	MustBeDone  Timestamp
+}
+
+type OfferAcceptionQuery struct {
+	OfferID           int64
+	ContractID        int64
+	InvestorSignature []byte
+}
+
+func (t *Timestamp) UnmarshalParam(src string) error {
+	ts, err := time.Parse(time.RFC3339, src)
+	*t = Timestamp(ts)
+	return err
+}
+
 type Offer struct {
-	id                int
-	contract          *Contract
-	supplier          *Supplier
-	supplierSignature []byte
-	comment           string
-}
-
-type saveable interface {
-	Save() error
-}
-
-func (c *Contract) Save() error {
-	return nil
-}
-
-func (o *Offer) Save() error {
-	return nil
+	ID                int
+	Contract          *Contract
+	Supplier          *Supplier
+	SupplierSignature []byte
+	Comment           string
 }
 
 type ECDSASignature struct {
@@ -68,13 +79,14 @@ type ECDSASignature struct {
 	s big.Int
 }
 
-const DbDriver = "sqlite3"
-const DbName = "./contracts.sqlite3"
+const dbDriver = "sqlite3"
+const dbName = "./contracts.sqlite3"
 
+// ListContracts - api controller for getting list of available contracts
 func ListContracts(c echo.Context) error {
-	supplierID := c.QueryParam("supplier_id")
-	investorID := c.QueryParam("investor_id")
-	title := c.QueryParam("title")
+	supplierID := c.QueryParam("SupplierID")
+	investorID := c.QueryParam("InvestorID")
+	title := c.QueryParam("Title")
 
 	sb := sqlbuilder.NewSelectBuilder()
 	sb.Select("*")
@@ -84,21 +96,21 @@ func ListContracts(c echo.Context) error {
 		if err != nil {
 			return c.String(http.StatusBadRequest, "Bad Request")
 		}
-		sb.Where(sb.Equal("supplierID", a))
+		sb.Where(sb.Equal("supplier_id", a))
 	}
 	if investorID != "" {
 		a, err := strconv.Atoi(investorID)
 		if err != nil {
 			return c.String(http.StatusBadRequest, "Bad Request")
 		}
-		sb.Where(sb.Equal("investorID", a))
+		sb.Where(sb.Equal("investor_id", a))
 	}
 	if title != "" {
 		sb.Where(sb.Like("title", title))
 	}
 	q, args := sb.Build()
 
-	db, err := sql.Open(DbDriver, DbName)
+	db, err := sql.Open(dbDriver, dbName)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -123,7 +135,6 @@ func ListContracts(c echo.Context) error {
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println(contract.Title)
 		contracts = append(contracts, contract)
 	}
 
@@ -131,14 +142,78 @@ func ListContracts(c echo.Context) error {
 	return c.JSON(http.StatusOK, contracts)
 }
 
+// GetContract - api controller for retrieving contract by ID
 func GetContract(c echo.Context) error {
-	return nil
+	ID := c.Param("id")
+
+	sb := sqlbuilder.NewSelectBuilder()
+	sb.Select("*")
+	sb.From("contracts")
+	if ID != "" {
+		a, err := strconv.Atoi(ID)
+		if err != nil {
+			return c.String(http.StatusBadRequest, "Bad Request")
+		}
+		sb.Where(sb.Equal("id", a))
+	}
+	q, args := sb.Build()
+
+	db, err := sql.Open(dbDriver, dbName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	supplier := Supplier{}
+	investor := Investor{}
+	contract := Contract{Investor: &investor, Supplier: &supplier}
+
+	err = db.QueryRow(q, args...).Scan(&contract.ID, &contract.Supplier.ID, &contract.Investor.ID,
+		&contract.Stage, &contract.Created, &contract.Title, &contract.Description, &contract.Amount,
+		&contract.MustBeDone, &contract.SupplierSignature, &contract.InvestorSignature)
+
+	if err == sql.ErrNoRows {
+		return c.String(http.StatusNotFound, "Contract not found")
+	} else if err != nil {
+		log.Fatal(err)
+	}
+
+	return c.JSON(http.StatusOK, contract)
 }
 
+// CreateContract - api controller for creating new contract
 func CreateContract(c echo.Context) error {
-	return nil
+	contractQuery := new(ContractQuery)
+	err := c.Bind(contractQuery)
+	if err != nil {
+		return c.String(http.StatusBadRequest, "Bad Request")
+	}
+	ib := sqlbuilder.NewInsertBuilder()
+	ib.InsertInto("contracts")
+	ib.Cols("investor_id", "title", "created", "title", "description", "amount", "must_be_done")
+	ib.Values(contractQuery.InvestorID, time.Now().Unix(), contractQuery.Title, contractQuery.Description,
+		contractQuery.Amount, time.Time(contractQuery.MustBeDone).Unix())
+	q, args := ib.Build()
+
+	db, err := sql.Open(dbDriver, dbName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	res, err := db.Exec(q, args...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return c.JSON(http.StatusCreated, struct{ id int64 }{id: id})
 }
 
+// UpdateContract - api controller for accepting an offer and finalizing contract creation
 func UpdateContract(c echo.Context) error {
 	return nil
 }
