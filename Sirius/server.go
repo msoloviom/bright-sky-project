@@ -1,8 +1,13 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/sha512"
 	"crypto/x509"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+
 	"fmt"
 	"log"
 	"math/big"
@@ -28,20 +33,29 @@ type Investor struct {
 	Cert sql.NullString
 }
 
+type ContractBody struct {
+	Title       string
+	Description string
+	Amount      int64
+	MustBeDone  string
+}
+
 type Contract struct {
 	ID       int64
 	Supplier *Supplier
 	Investor *Investor
 	Stage    int64
-	Created  int64
+	Created  string
 
-	Title       sql.NullString
-	Description sql.NullString
-	Amount      sql.NullInt64
-	MustBeDone  sql.NullInt64
+	ContractBody ContractBody
 
 	SupplierSignature []byte
 	InvestorSignature []byte
+}
+
+func (c *Contract) GetEncoded() []byte {
+	r, _ := json.Marshal(c.ContractBody)
+	return r
 }
 
 type Timestamp time.Time
@@ -54,10 +68,18 @@ type ContractQuery struct {
 	MustBeDone  Timestamp
 }
 
+type Signature []byte
+
 type OfferAcceptionQuery struct {
 	OfferID           int64
 	ContractID        int64
-	InvestorSignature []byte
+	InvestorSignature Signature
+}
+
+func (s *Signature) UnmarshalParam(src string) error {
+	b, err := base64.StdEncoding.DecodeString(src)
+	*s = Signature(b)
+	return err
 }
 
 func (t *Timestamp) UnmarshalParam(src string) error {
@@ -68,6 +90,7 @@ func (t *Timestamp) UnmarshalParam(src string) error {
 
 type Offer struct {
 	ID                int
+	Created           string
 	Contract          *Contract
 	Supplier          *Supplier
 	SupplierSignature []byte
@@ -130,7 +153,7 @@ func ListContracts(c echo.Context) error {
 		contract := Contract{Investor: &investor, Supplier: &supplier}
 
 		err = rows.Scan(&contract.ID, &contract.Supplier.ID, &contract.Investor.ID, &contract.Stage,
-			&contract.Created, &contract.Title, &contract.Description, &contract.Amount, &contract.MustBeDone,
+			&contract.Created, &contract.ContractBody.Title, &contract.ContractBody.Description, &contract.ContractBody.Amount, &contract.ContractBody.MustBeDone,
 			&contract.SupplierSignature, &contract.InvestorSignature)
 		if err != nil {
 			log.Fatal(err)
@@ -138,7 +161,7 @@ func ListContracts(c echo.Context) error {
 		contracts = append(contracts, contract)
 	}
 
-	fmt.Println(contracts)
+	fmt.Printf("%s", contracts[0].GetEncoded())
 	return c.JSON(http.StatusOK, contracts)
 }
 
@@ -169,8 +192,8 @@ func GetContract(c echo.Context) error {
 	contract := Contract{Investor: &investor, Supplier: &supplier}
 
 	err = db.QueryRow(q, args...).Scan(&contract.ID, &contract.Supplier.ID, &contract.Investor.ID,
-		&contract.Stage, &contract.Created, &contract.Title, &contract.Description, &contract.Amount,
-		&contract.MustBeDone, &contract.SupplierSignature, &contract.InvestorSignature)
+		&contract.Stage, &contract.Created, &contract.ContractBody.Title, &contract.ContractBody.Description,
+		&contract.ContractBody.Amount, &contract.ContractBody.MustBeDone, &contract.SupplierSignature, &contract.InvestorSignature)
 
 	if err == sql.ErrNoRows {
 		return c.String(http.StatusNotFound, "Contract not found")
@@ -191,8 +214,8 @@ func CreateContract(c echo.Context) error {
 	ib := sqlbuilder.NewInsertBuilder()
 	ib.InsertInto("contracts")
 	ib.Cols("investor_id", "title", "created", "title", "description", "amount", "must_be_done")
-	ib.Values(contractQuery.InvestorID, time.Now().Unix(), contractQuery.Title, contractQuery.Description,
-		contractQuery.Amount, time.Time(contractQuery.MustBeDone).Unix())
+	ib.Values(contractQuery.InvestorID, time.Now().Format(time.RFC3339), contractQuery.Title, contractQuery.Description,
+		contractQuery.Amount, time.Time(contractQuery.MustBeDone).Format(time.RFC3339))
 	q, args := ib.Build()
 
 	db, err := sql.Open(dbDriver, dbName)
@@ -215,6 +238,55 @@ func CreateContract(c echo.Context) error {
 
 // UpdateContract - api controller for accepting an offer and finalizing contract creation
 func UpdateContract(c echo.Context) error {
+	offerAcceptionQuery := new(OfferAcceptionQuery)
+	err := c.Bind(offerAcceptionQuery)
+	if err != nil {
+		return c.String(http.StatusBadRequest, "Bad Request")
+	}
+
+	db, err := sql.Open(dbDriver, dbName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	sb := sqlbuilder.NewSelectBuilder()
+	sb.Select("*")
+	sb.From("contracts")
+	sb.Where(sb.Equal("id", offerAcceptionQuery.ContractID))
+	q, args := sb.Build()
+
+	supplier := Supplier{}
+	investor := Investor{}
+	contract := Contract{Investor: &investor, Supplier: &supplier}
+
+	err = db.QueryRow(q, args...).Scan(&contract.ID, &contract.Supplier.ID, &contract.Investor.ID,
+		&contract.Stage, &contract.Created, &contract.ContractBody.Title, &contract.ContractBody.Description,
+		&contract.ContractBody.Amount, &contract.ContractBody.MustBeDone, &contract.SupplierSignature, &contract.InvestorSignature)
+
+	if err == sql.ErrNoRows {
+		return c.String(http.StatusNotFound, "Contract not found")
+	} else if err != nil {
+		log.Fatal(err)
+	}
+
+	sb.Select("supplier_signature")
+	sb.From("offers")
+	sb.Where(sb.Equal("id", offerAcceptionQuery.OfferID), sb.Equal("contract_id", contract.ID))
+	q, args = sb.Build()
+	var supplierSignature []byte
+	err = db.QueryRow(q, args...).Scan(&supplierSignature)
+	if err == sql.ErrNoRows {
+		return c.String(http.StatusNotFound, "Offer not found")
+	} else if err != nil {
+		log.Fatal(err)
+	}
+
+	hash := sha512.Sum512(contract.GetEncoded())
+	certDer, err := base64.StdEncoding.DecodeString(contract.Investor.Cert.String)
+	certObj, err := x509.ParseCertificate(certDer)
+	pubKey := certObj.PublicKey.(ecdsa.PublicKey)
+	ecdsa.Verify(pubKey, hash)
 	return nil
 }
 
