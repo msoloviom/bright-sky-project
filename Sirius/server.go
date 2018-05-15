@@ -5,32 +5,83 @@ import (
 	"crypto/sha512"
 	"crypto/x509"
 	"database/sql"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
-
+	"encoding/pem"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/big"
 	"net/http"
 	"strconv"
 	"time"
 
-	"./ca"
 	"github.com/huandu/go-sqlbuilder"
 	"github.com/labstack/echo"
 	_ "github.com/mattn/go-sqlite3"
 )
 
-type Supplier struct {
+type UserAbstract struct {
 	ID   sql.NullInt64
 	Name sql.NullString
 	Cert sql.NullString
 }
 
+type loadable interface {
+	Load(cache map[int64]UserAbstract) error
+}
+
+type Supplier struct {
+	loadable
+	UserAbstract
+}
+
 type Investor struct {
-	ID   int64
-	Name sql.NullString
-	Cert sql.NullString
+	loadable
+	UserAbstract
+}
+
+// Load Supplier from the external api
+func (s *Supplier) Load(cache map[int64]UserAbstract) error {
+	if !s.ID.Valid {
+		return nil
+	}
+	v, ok := cache[s.ID.Int64]
+	if ok {
+		s.UserAbstract = v
+
+	} else {
+		// There might be loading object from foreign api
+		s.Name.String = "Dart Veider"
+		s.Name.Valid = true
+		cert, _ := ioutil.ReadFile("ca/Dart Veider.crt")
+		s.Cert.String = string(cert)
+		s.Cert.Valid = true
+		cache[s.ID.Int64] = s.UserAbstract
+	}
+	return nil
+}
+
+// Load Investor from the external api
+func (s *Investor) Load(cache map[int64]UserAbstract) error {
+	if !s.ID.Valid {
+		return errors.New("id could not be nil")
+	}
+	v, ok := cache[s.ID.Int64]
+	if ok {
+		s.UserAbstract = v
+
+	} else {
+		// There might be loading object from foreign api
+		s.Name.String = "Dart Veider"
+		s.Name.Valid = true
+		cert, _ := ioutil.ReadFile("ca/Dart Veider.crt")
+		s.Cert.String = string(cert)
+		s.Cert.Valid = true
+	}
+	return nil
 }
 
 type ContractBody struct {
@@ -49,8 +100,8 @@ type Contract struct {
 
 	ContractBody ContractBody
 
-	SupplierSignature []byte
-	InvestorSignature []byte
+	SupplierSignature sql.NullString
+	InvestorSignature sql.NullString
 }
 
 func (c *Contract) GetEncoded() []byte {
@@ -73,13 +124,7 @@ type Signature []byte
 type OfferAcceptionQuery struct {
 	OfferID           int64
 	ContractID        int64
-	InvestorSignature Signature
-}
-
-func (s *Signature) UnmarshalParam(src string) error {
-	b, err := base64.StdEncoding.DecodeString(src)
-	*s = Signature(b)
-	return err
+	InvestorSignature string
 }
 
 func (t *Timestamp) UnmarshalParam(src string) error {
@@ -89,12 +134,12 @@ func (t *Timestamp) UnmarshalParam(src string) error {
 }
 
 type Offer struct {
-	ID                int
+	ID                int64
 	Created           string
-	Contract          *Contract
+	ContractID        int64
 	Supplier          *Supplier
-	SupplierSignature []byte
-	Comment           string
+	SupplierSignature sql.NullString
+	Comment           sql.NullString
 }
 
 type ECDSASignature struct {
@@ -146,6 +191,8 @@ func ListContracts(c echo.Context) error {
 	defer rows.Close()
 
 	var contracts []Contract
+	investorsCache := make(map[int64]UserAbstract)
+	suppliersCache := make(map[int64]UserAbstract)
 
 	for rows.Next() {
 		supplier := Supplier{}
@@ -158,6 +205,8 @@ func ListContracts(c echo.Context) error {
 		if err != nil {
 			log.Fatal(err)
 		}
+		contract.Investor.Load(investorsCache)
+		contract.Supplier.Load(suppliersCache)
 		contracts = append(contracts, contract)
 	}
 
@@ -185,6 +234,7 @@ func GetContract(c echo.Context) error {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	defer db.Close()
 
 	supplier := Supplier{}
@@ -200,6 +250,11 @@ func GetContract(c echo.Context) error {
 	} else if err != nil {
 		log.Fatal(err)
 	}
+	investorsCache := make(map[int64]UserAbstract)
+	suppliersCache := make(map[int64]UserAbstract)
+
+	contract.Investor.Load(investorsCache)
+	contract.Supplier.Load(suppliersCache)
 
 	return c.JSON(http.StatusOK, contract)
 }
@@ -234,6 +289,30 @@ func CreateContract(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, struct{ id int64 }{id: id})
+}
+
+// VerifySignature verifies ecdsa signature, algorithm - ECDSA with curve P-384 and hash - SHA-512-384
+func VerifySignature(b64signature, pemcert string, data []byte) bool {
+	derSignature, err := base64.StdEncoding.DecodeString(b64signature)
+	if err != nil {
+		return false
+	}
+	sig := ECDSASignature{}
+	_, err = asn1.Unmarshal(derSignature, &sig)
+	if err != nil {
+		return false
+	}
+	hash := sha512.Sum384(data)
+	certBlock, rest := pem.Decode([]byte(pemcert))
+	if len(rest) > 0 {
+		return false
+	}
+	certObj, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return false
+	}
+	pubKey := certObj.PublicKey.(ecdsa.PublicKey)
+	return ecdsa.Verify(&pubKey, hash[:], &sig.r, &sig.s)
 }
 
 // UpdateContract - api controller for accepting an offer and finalizing contract creation
@@ -274,27 +353,93 @@ func UpdateContract(c echo.Context) error {
 	sb.From("offers")
 	sb.Where(sb.Equal("id", offerAcceptionQuery.OfferID), sb.Equal("contract_id", contract.ID))
 	q, args = sb.Build()
-	var supplierSignature []byte
+	var supplierSignature string
 	err = db.QueryRow(q, args...).Scan(&supplierSignature)
+
 	if err == sql.ErrNoRows {
 		return c.String(http.StatusNotFound, "Offer not found")
 	} else if err != nil {
 		log.Fatal(err)
 	}
 
-	hash := sha512.Sum512(contract.GetEncoded())
-	certDer, err := base64.StdEncoding.DecodeString(contract.Investor.Cert.String)
-	certObj, err := x509.ParseCertificate(certDer)
-	pubKey := certObj.PublicKey.(ecdsa.PublicKey)
-	ecdsa.Verify(pubKey, hash)
-	return nil
+	contractToBeSigned := contract.GetEncoded()
+	supplierVerified := VerifySignature(supplierSignature, contract.Supplier.Cert.String, contractToBeSigned)
+	investorVerified := VerifySignature(offerAcceptionQuery.InvestorSignature, contract.Investor.Cert.String, contractToBeSigned)
+
+	if supplierVerified && investorVerified {
+		ub := sqlbuilder.NewUpdateBuilder()
+		ub.Update("contracts")
+		ub.Where(ub.Equal("id", contract.ID))
+		ub.Set(ub.Assign("supplier_signature", supplierSignature), ub.Assign("investor_signature", offerAcceptionQuery.InvestorSignature), ub.Assign("stage", 1))
+		q, args := ub.Build()
+		res, err := db.Exec(q, args...)
+		if err != nil {
+			log.Fatal(err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil || affected != 1 {
+			log.Fatal(err, affected)
+		}
+		return c.String(http.StatusOK, "")
+
+	} else {
+		return c.String(http.StatusBadRequest, "Signature not verified")
+	}
 }
 
+// DeleteContract - api controller for removing contract
 func DeleteContract(c echo.Context) error {
-	return nil
+	dB, err := sql.Open(dbDriver, dbName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dB.Close()
+
+	id := c.Param("id")
+	db := sqlbuilder.NewDeleteBuilder()
+	db.DeleteFrom("contracts")
+	db.Where(db.Equal("id", id))
+	q, args := db.Build()
+
+	res, err := dB.Exec(q, args...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if affected != 1 {
+		return c.String(http.StatusNotFound, "Contract not found")
+	}
+
+	return c.String(http.StatusOK, "")
 }
 
 func GetOffer(c echo.Context) error {
+	ID := c.Param("id")
+
+	sb := sqlbuilder.NewSelectBuilder()
+	sb.Select("*")
+	sb.From("offers")
+	if ID != "" {
+		a, err := strconv.Atoi(ID)
+		if err != nil {
+			return c.String(http.StatusBadRequest, "Bad Request")
+		}
+		sb.Where(sb.Equal("id", a))
+	}
+	q, args := sb.Build()
+
+	db, err := sql.Open(dbDriver, dbName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	supplier := Supplier{}
+
+	offer := Offer{Supplier: &supplier}
 	return nil
 }
 
@@ -323,11 +468,6 @@ func DeleteOffer(c echo.Context) error {
 	DELETE offers/{id} - delete offer with specific id
 */
 func main() {
-
-	log.Println("Generating an ECDSA P-256 Private Key")
-	ECKey := ca.GenerateECKey()
-	ca.GenerateCert(&ECKey.PublicKey, ECKey, "ECDSA Sirius Root Authority", x509.KeyUsageCertSign|x509.KeyUsageCRLSign, "sirius.pem")
-
 	e := echo.New()
 	e.GET("/contracts", ListContracts)
 	e.GET("/contracts/:id", GetContract)
