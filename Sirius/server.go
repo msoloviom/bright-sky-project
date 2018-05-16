@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"math/big"
@@ -111,12 +110,17 @@ func (c *Contract) GetEncoded() []byte {
 
 type Timestamp time.Time
 
+func (t *Timestamp) UnmarshalParam(src string) error {
+	ts, err := time.Parse(time.RFC3339, src)
+	*t = Timestamp(ts)
+	return err
+}
+
 type ContractQuery struct {
-	InvestorID  int64
 	Title       string
 	Description string
 	Amount      int64
-	MustBeDone  Timestamp
+	MustBeDone  *Timestamp
 }
 
 type Signature []byte
@@ -125,12 +129,6 @@ type OfferAcceptionQuery struct {
 	OfferID           int64
 	ContractID        int64
 	InvestorSignature string
-}
-
-func (t *Timestamp) UnmarshalParam(src string) error {
-	ts, err := time.Parse(time.RFC3339, src)
-	*t = Timestamp(ts)
-	return err
 }
 
 type Offer struct {
@@ -142,9 +140,25 @@ type Offer struct {
 	Comment           sql.NullString
 }
 
+type OfferQuery struct {
+	ContractID        int64
+	Comment           string
+	SupplierSignature string
+}
+
 type ECDSASignature struct {
 	r big.Int
 	s big.Int
+}
+
+type InvestorContext struct {
+	echo.Context
+	InvestorID int64
+}
+
+type SupplierContext struct {
+	echo.Context
+	SupplierID int64
 }
 
 const dbDriver = "sqlite3"
@@ -210,7 +224,6 @@ func ListContracts(c echo.Context) error {
 		contracts = append(contracts, contract)
 	}
 
-	fmt.Printf("%s", contracts[0].GetEncoded())
 	return c.JSON(http.StatusOK, contracts)
 }
 
@@ -261,16 +274,19 @@ func GetContract(c echo.Context) error {
 
 // CreateContract - api controller for creating new contract
 func CreateContract(c echo.Context) error {
+	ic := c.(InvestorContext)
+
 	contractQuery := new(ContractQuery)
 	err := c.Bind(contractQuery)
 	if err != nil {
+		log.Print(err)
 		return c.String(http.StatusBadRequest, "Bad Request")
 	}
 	ib := sqlbuilder.NewInsertBuilder()
 	ib.InsertInto("contracts")
-	ib.Cols("investor_id", "title", "created", "title", "description", "amount", "must_be_done")
-	ib.Values(contractQuery.InvestorID, time.Now().Format(time.RFC3339), contractQuery.Title, contractQuery.Description,
-		contractQuery.Amount, time.Time(contractQuery.MustBeDone).Format(time.RFC3339))
+	ib.Cols("investor_id", "title", "created", "description", "amount", "must_be_done")
+	ib.Values(ic.InvestorID, contractQuery.Title, time.Now().Format(time.RFC3339), contractQuery.Description,
+		contractQuery.Amount, time.Time(*contractQuery.MustBeDone).Format(time.RFC3339))
 	q, args := ib.Build()
 
 	db, err := sql.Open(dbDriver, dbName)
@@ -317,6 +333,8 @@ func VerifySignature(b64signature, pemcert string, data []byte) bool {
 
 // UpdateContract - api controller for accepting an offer and finalizing contract creation
 func UpdateContract(c echo.Context) error {
+	ic := c.(InvestorContext)
+
 	offerAcceptionQuery := new(OfferAcceptionQuery)
 	err := c.Bind(offerAcceptionQuery)
 	if err != nil {
@@ -332,7 +350,7 @@ func UpdateContract(c echo.Context) error {
 	sb := sqlbuilder.NewSelectBuilder()
 	sb.Select("*")
 	sb.From("contracts")
-	sb.Where(sb.Equal("id", offerAcceptionQuery.ContractID))
+	sb.Where(sb.Equal("id", offerAcceptionQuery.ContractID), sb.Equal("investor_id", ic.InvestorID))
 	q, args := sb.Build()
 
 	supplier := Supplier{}
@@ -389,6 +407,8 @@ func UpdateContract(c echo.Context) error {
 
 // DeleteContract - api controller for removing contract
 func DeleteContract(c echo.Context) error {
+	ic := c.(InvestorContext)
+
 	dB, err := sql.Open(dbDriver, dbName)
 	if err != nil {
 		log.Fatal(err)
@@ -398,7 +418,7 @@ func DeleteContract(c echo.Context) error {
 	id := c.Param("id")
 	db := sqlbuilder.NewDeleteBuilder()
 	db.DeleteFrom("contracts")
-	db.Where(db.Equal("id", id))
+	db.Where(db.Equal("id", id), db.Equal("investor_id", ic.InvestorID))
 	q, args := db.Build()
 
 	res, err := dB.Exec(q, args...)
@@ -416,6 +436,7 @@ func DeleteContract(c echo.Context) error {
 	return c.String(http.StatusOK, "")
 }
 
+// GetOffer - api controller for retrieving an offer by ID
 func GetOffer(c echo.Context) error {
 	ID := c.Param("id")
 
@@ -440,19 +461,182 @@ func GetOffer(c echo.Context) error {
 	supplier := Supplier{}
 
 	offer := Offer{Supplier: &supplier}
-	return nil
+
+	err = db.QueryRow(q, args...).Scan(offer.ID, offer.ContractID, offer.Supplier.ID, offer.SupplierSignature, offer.Comment, offer.Created)
+	if err == sql.ErrNoRows {
+		return c.String(http.StatusNotFound, "Contract not found")
+	} else if err != nil {
+		log.Fatal(err)
+	}
+
+	suppliersCache := make(map[int64]UserAbstract)
+	offer.Supplier.Load(suppliersCache)
+	return c.JSON(http.StatusOK, offer)
 }
 
+// ListOffers - api controller for obtaining list of offers
 func ListOffers(c echo.Context) error {
-	return nil
+	supplierID := c.QueryParam("SupplierID")
+	contractID := c.QueryParam("ContractID")
+
+	sb := sqlbuilder.NewSelectBuilder()
+	sb.Select("*")
+	sb.From("offers")
+	if supplierID != "" {
+		a, err := strconv.Atoi(supplierID)
+		if err != nil {
+			return c.String(http.StatusBadRequest, "Bad Request")
+		}
+		sb.Where(sb.Equal("supplier_id", a))
+	}
+	if contractID != "" {
+		a, err := strconv.Atoi(contractID)
+		if err != nil {
+			return c.String(http.StatusBadRequest, "Bad Request")
+		}
+		sb.Where(sb.Equal("contract_id", a))
+	}
+
+	q, args := sb.Build()
+
+	db, err := sql.Open(dbDriver, dbName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	var offers []Offer
+	suppliersCache := make(map[int64]UserAbstract)
+
+	for rows.Next() {
+		supplier := Supplier{}
+		offer := Offer{Supplier: &supplier}
+
+		err = rows.Scan(&offer.ID, &offer.ContractID, &offer.Supplier.ID, &offer.SupplierSignature, &offer.Comment, &offer.Created)
+		if err != nil {
+			log.Fatal(err)
+		}
+		offer.Supplier.Load(suppliersCache)
+		offers = append(offers, offer)
+	}
+
+	return c.JSON(http.StatusOK, offers)
 }
 
+// CreateOffer - api controller for creation of an offer
 func CreateOffer(c echo.Context) error {
-	return nil
+	sc := c.(SupplierContext)
+
+	offerQuery := new(OfferQuery)
+	err := c.Bind(offerQuery)
+	if err != nil {
+		return c.String(http.StatusBadRequest, "Bad Request")
+	}
+	ib := sqlbuilder.NewInsertBuilder()
+	ib.InsertInto("offers")
+	ib.Cols("contract_id", "supplier_id", "supplier_signature", "comment", "created")
+	ib.Values(offerQuery.ContractID, sc.SupplierID, offerQuery.SupplierSignature, offerQuery.Comment, time.Now().Format(time.RFC3339))
+	q, args := ib.Build()
+
+	db, err := sql.Open(dbDriver, dbName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	res, err := db.Exec(q, args...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return c.JSON(http.StatusCreated, struct{ id int64 }{id: id})
 }
 
+// DeleteOffer - api controller for removing offers by ID
 func DeleteOffer(c echo.Context) error {
-	return nil
+	sc := c.(SupplierContext)
+
+	dB, err := sql.Open(dbDriver, dbName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dB.Close()
+
+	id := c.Param("id")
+	db := sqlbuilder.NewDeleteBuilder()
+	db.DeleteFrom("offers")
+	db.Where(db.Equal("id", id), db.Equal("supplier_id", sc.SupplierID))
+	q, args := db.Build()
+
+	res, err := dB.Exec(q, args...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if affected != 1 {
+		return c.String(http.StatusNotFound, "Offer not found")
+	}
+
+	return c.String(http.StatusOK, "")
+}
+
+type (
+	SupplierAuthorizationToken string
+	InvestorAuthorizationToken string
+)
+
+func (t SupplierAuthorizationToken) Authorize() (int64, error) {
+	return 1, nil
+}
+
+func (t InvestorAuthorizationToken) Authorize() (int64, error) {
+	return 1, nil
+}
+
+func ResponseHeaderMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		c.Response().Header().Set(echo.HeaderServer, "Sirius Contracts Service 1.0")
+		return next(c)
+	}
+}
+
+func SupplierAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		var token SupplierAuthorizationToken
+		token = SupplierAuthorizationToken(c.Request().Header.Get("Authorization"))
+		id, err := token.Authorize()
+		if err != nil {
+			return echo.ErrUnauthorized
+		}
+		sc := SupplierContext{c, id}
+		return next(sc)
+	}
+}
+
+func InvestorAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		var token InvestorAuthorizationToken
+		token = InvestorAuthorizationToken(c.Request().Header.Get("Authorization"))
+		id, err := token.Authorize()
+		if err != nil {
+			return echo.ErrUnauthorized
+		}
+		sc := InvestorContext{c, id}
+		return next(sc)
+	}
 }
 
 /*
@@ -462,18 +646,24 @@ func DeleteOffer(c echo.Context) error {
 	PATCH contracts/{id} - update contract(accept offer)
 	DELETE contracts/{id} - delete contract with specific id
 
-	GET offers/ - list of offers, fliterable params - supplierID, contract_id
+	GET offers/ - list of offers, fliterable params - supplierID, contractID
 	GET offers/{id} - retrieve offer with specific id
 	POST offers/ - create offer
 	DELETE offers/{id} - delete offer with specific id
 */
 func main() {
 	e := echo.New()
+	e.Use(ResponseHeaderMiddleware)
 	e.GET("/contracts", ListContracts)
 	e.GET("/contracts/:id", GetContract)
-	e.POST("/contracts", CreateContract)
-	e.PATCH("/contracts/:id", UpdateContract)
-	e.DELETE("/contracts/:id", DeleteContract)
+	e.POST("/contracts", CreateContract, InvestorAuthMiddleware)
+	e.PATCH("/contracts/:id", UpdateContract, InvestorAuthMiddleware)
+	e.DELETE("/contracts/:id", DeleteContract, InvestorAuthMiddleware)
+
+	e.GET("/offers", ListOffers)
+	e.GET("/offers/:id", GetOffer)
+	e.POST("/offers", CreateOffer, SupplierAuthMiddleware)
+	e.DELETE("/offers/:id", DeleteOffer, SupplierAuthMiddleware)
 
 	e.Logger.Fatal(e.Start(":1323"))
 }
