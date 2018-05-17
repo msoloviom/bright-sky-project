@@ -22,7 +22,8 @@ import static org.springframework.util.CollectionUtils.isEmpty;
 @RequestMapping("/api")
 public class ClientController {
 
-    public static final String SUCCESSFULLY_CREATED = "Client was successfully created";
+    private static final String SUCCESSFULLY_CREATED = "Client was successfully created";
+
     @Autowired
     private ClientService clientService;
 
