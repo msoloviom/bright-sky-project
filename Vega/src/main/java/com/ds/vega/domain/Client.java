@@ -7,16 +7,18 @@ import org.springframework.data.mongodb.core.mapping.Document;
 public class Client {
 
     @Id
-    private String id;
+    private String _id;
 
     private String name;
 
+    private String cert;
+
     public String getId() {
-        return id;
+        return _id;
     }
 
     public void setId(String id) {
-        this.id = id;
+        this._id = id;
     }
 
     public String getName() {
@@ -27,24 +29,11 @@ public class Client {
         this.name = name;
     }
 
-    /* @ObjectId
-    @JsonProperty("_id")
-    public String getId() {
-        return id;
-    }
-    @ObjectId
-    @JsonProperty("_id")
-    public void setId(String id) {
-        this.id = id;
+    public String getCert() {
+        return cert;
     }
 
-    @JsonProperty("name")
-    public String getName() {
-        return name;
+    public void setCert(String cert) {
+        this.cert = cert;
     }
-
-    @JsonProperty("name")
-    public void setName(String name) {
-        this.name = name;
-    }*/
 }
