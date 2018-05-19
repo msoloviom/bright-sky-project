@@ -1,10 +1,6 @@
 package com.ds.vega;
 
 import com.ds.vega.repository.ClientRepository;
-import com.mongodb.MongoClient;
-import com.mongodb.client.MongoCollection;
-import com.mongodb.client.MongoDatabase;
-import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -17,7 +13,7 @@ public class VegaApplication {
 	private ClientRepository clientRepository;
 
 	public static void main(String[] args) {
-		MongoClient mongoClient = new MongoClient();
+		/*MongoClient mongoClient = new MongoClient();
 		MongoDatabase database = mongoClient.getDatabase("vega");
         Document client = new Document("name", "John Doe")
                 //.append("name", "John Doe")
@@ -25,7 +21,18 @@ public class VegaApplication {
 		MongoCollection<Document> collection = database.getCollection("client");
 		collection.insertOne(client);
 		//collection.drop();
-		mongoClient.close();
+		mongoClient.close();*/
+
+		/*MongoClient mongoClient = new MongoClient();
+		MongoDatabase database = mongoClient.getDatabase("vega");
+		MongoCollection<Document> collection = database.getCollection("token");
+        Document client = new Document("_id", "1")
+                .append("token", "iyfgraigaerggu")
+                .append("clientId", "1")
+        		.append("createdDt", new Date());
+		collection.insertOne(client);
+		//collection.drop();
+		mongoClient.close();*/
 
 
 		SpringApplication.run(VegaApplication.class, args);
