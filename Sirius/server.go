@@ -9,8 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
-	"io/ioutil"
+	"fmt"
 	"log"
 	"math/big"
 	"net/http"
@@ -28,6 +27,12 @@ type UserAbstract struct {
 	Cert sql.NullString
 }
 
+type userExternal struct {
+	ID   int64  `json:"id,string"`
+	Name string `json:"name"`
+	Cert string `json:"cert"`
+}
+
 type loadable interface {
 	Load(cache map[int64]UserAbstract) error
 }
@@ -42,8 +47,11 @@ type Investor struct {
 	UserAbstract
 }
 
+const GatewayURL = "http://172.20.10.6:8000"
+
 // Load Supplier from the external api
-func (s *Supplier) Load(cache map[int64]UserAbstract) error {
+func (s *Supplier) Load(cache map[int64]UserAbstract) (err error) {
+	suppliersAPI := GatewayURL + "/clients/%d"
 	if !s.ID.Valid {
 		return nil
 	}
@@ -52,12 +60,25 @@ func (s *Supplier) Load(cache map[int64]UserAbstract) error {
 		s.UserAbstract = v
 
 	} else {
-		// There might be loading object from foreign api
-		s.Name.String = "Dart Veider"
+		res, err := http.Get(fmt.Sprintf(suppliersAPI, s.ID.Int64))
+
+		if err != nil {
+			log.Print(err)
+			return err
+		}
+		defer res.Body.Close()
+		u := userExternal{}
+		err = json.NewDecoder(res.Body).Decode(&u)
+		//fmt.Print(u)
+		if err != nil {
+			log.Print(err)
+			return err
+		}
 		s.Name.Valid = true
-		cert, _ := ioutil.ReadFile("ca/Dart Veider.crt")
-		s.Cert.String = string(cert)
+		s.Name.String = u.Name
 		s.Cert.Valid = true
+		s.Cert.String = u.Cert
+
 		cache[s.ID.Int64] = s.UserAbstract
 	}
 	return nil
@@ -65,20 +86,35 @@ func (s *Supplier) Load(cache map[int64]UserAbstract) error {
 
 // Load Investor from the external api
 func (s *Investor) Load(cache map[int64]UserAbstract) error {
+	investorsAPI := GatewayURL + "/investors/%d"
 	if !s.ID.Valid {
-		return errors.New("id could not be nil")
+		return nil
 	}
 	v, ok := cache[s.ID.Int64]
 	if ok {
 		s.UserAbstract = v
 
 	} else {
-		// There might be loading object from foreign api
-		s.Name.String = "Dart Veider"
+		res, err := http.Get(fmt.Sprintf(investorsAPI, s.ID.Int64))
+
+		if err != nil {
+			log.Print(err)
+			return err
+		}
+		defer res.Body.Close()
+		u := userExternal{}
+		err = json.NewDecoder(res.Body).Decode(&u)
+		//fmt.Print(u)
+		if err != nil {
+			log.Print(err)
+			return err
+		}
 		s.Name.Valid = true
-		cert, _ := ioutil.ReadFile("ca/Dart Veider.crt")
-		s.Cert.String = string(cert)
+		s.Name.String = u.Name
 		s.Cert.Valid = true
+		s.Cert.String = u.Cert
+
+		cache[s.ID.Int64] = s.UserAbstract
 	}
 	return nil
 }
