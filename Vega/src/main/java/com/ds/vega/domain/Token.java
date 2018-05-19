@@ -1,7 +1,5 @@
 package com.ds.vega.domain;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.util.Date;
@@ -9,9 +7,7 @@ import java.util.Date;
 @Document(collection = "token")
 public class Token {
 
-    @Id
-    @JsonProperty("id")
-    private String _id;
+    private String id;
 
     private String token;
 
@@ -19,12 +15,12 @@ public class Token {
 
     private Date createdDt;
 
-    public String get_id() {
-        return _id;
+    public String getId() {
+        return id;
     }
 
     public void set_id(String _id) {
-        this._id = _id;
+        this.id = _id;
     }
 
     public String getToken() {
