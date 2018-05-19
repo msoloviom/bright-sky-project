@@ -1,24 +1,22 @@
 package com.ds.vega.domain;
 
-import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 @Document(collection = "client")
 public class Client {
 
-    @Id
-    private String _id;
+    private String id;
 
     private String name;
 
     private String cert;
 
     public String getId() {
-        return _id;
+        return id;
     }
 
     public void setId(String id) {
-        this._id = id;
+        this.id = id;
     }
 
     public String getName() {
