@@ -1,8 +1,11 @@
 package com.ds.canopus.controller;
 
 import com.ds.canopus.domain.Investor;
+import com.ds.canopus.domain.Token;
+import com.ds.canopus.repository.TokenRepository;
 import com.ds.canopus.resource.PostResource;
 import com.ds.canopus.service.InvestorService;
+import com.ds.canopus.service.TokenService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpStatus;
@@ -26,6 +29,12 @@ public class InvestorController {
 
     @Autowired
     private InvestorService investorService;
+
+    @Autowired
+    private TokenService tokenService;
+
+    @Autowired
+    private TokenRepository tokenRepository;
 
     @GetMapping("/investors")
     public HttpEntity<List<Investor>> getAllInvestors() {
@@ -53,4 +62,23 @@ public class InvestorController {
         return new ResponseEntity<>(new PostResource(investorId, SUCCESSFULLY_CREATED), HttpStatus.CREATED);
     }
 
+    @GetMapping("/investors/auth/{token}")
+    public HttpEntity<Long> getInvestorIdByToken(@PathVariable String token) {
+        Token foundToken = tokenService.findByToken(token);
+        if (foundToken == null) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        } else {
+            return new ResponseEntity<>(foundToken.getInvestorId(), HttpStatus.OK);
+        }
+    }
+
+    @GetMapping("/investors/auth/tokens")
+    public HttpEntity<List<Token>> getInvestorTokens() {
+        List<Token> tokens = tokenRepository.findAll();
+        if (isEmpty(tokens)) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        } else {
+            return new ResponseEntity<>(tokens, HttpStatus.OK);
+        }
+    }
 }
