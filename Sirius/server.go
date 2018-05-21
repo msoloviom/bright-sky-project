@@ -9,7 +9,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/big"
 	"net/http"
@@ -189,12 +191,12 @@ type ECDSASignature struct {
 
 type InvestorContext struct {
 	echo.Context
-	InvestorID int64
+	InvestorID sql.NullInt64
 }
 
 type SupplierContext struct {
 	echo.Context
-	SupplierID int64
+	SupplierID sql.NullInt64
 }
 
 const dbDriver = "sqlite3"
@@ -417,10 +419,10 @@ func UpdateContract(c echo.Context) error {
 	}
 
 	contractToBeSigned := contract.GetEncoded()
-	supplierVerified := VerifySignature(supplierSignature, contract.Supplier.Cert.String, contractToBeSigned)
+	//supplierVerified := VerifySignature(supplierSignature, contract.Supplier.Cert.String, contractToBeSigned)
 	investorVerified := VerifySignature(offerAcceptionQuery.InvestorSignature, contract.Investor.Cert.String, contractToBeSigned)
 
-	if supplierVerified && investorVerified {
+	if investorVerified {
 		ub := sqlbuilder.NewUpdateBuilder()
 		ub.Update("contracts")
 		ub.Where(ub.Equal("id", contract.ID))
@@ -570,21 +572,56 @@ func CreateOffer(c echo.Context) error {
 	sc := c.(SupplierContext)
 
 	offerQuery := new(OfferQuery)
-	err := c.Bind(offerQuery)
+
+	supplier := Supplier{UserAbstract: UserAbstract{ID: sc.SupplierID}}
+
+	m := make(map[int64]UserAbstract)
+	err := supplier.Load(m)
+
+	if err != nil {
+		log.Print(err)
+		return c.String(http.StatusBadGateway, "Supplier's certificate could not be loaded")
+	}
+
+	err = c.Bind(offerQuery)
 	if err != nil {
 		return c.String(http.StatusBadRequest, "Bad Request")
 	}
-	ib := sqlbuilder.NewInsertBuilder()
-	ib.InsertInto("offers")
-	ib.Cols("contract_id", "supplier_id", "supplier_signature", "comment", "created")
-	ib.Values(offerQuery.ContractID, sc.SupplierID, offerQuery.SupplierSignature, offerQuery.Comment, time.Now().Format(time.RFC3339))
-	q, args := ib.Build()
 
 	db, err := sql.Open(dbDriver, dbName)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
+
+	sb := sqlbuilder.NewSelectBuilder()
+	sb.Select("title", "description", "amount", "must_be_done")
+	sb.From("contracts")
+	sb.Where(sb.Equal("id", offerQuery.ContractID))
+	q, args := sb.Build()
+
+	contractBody := ContractBody{}
+
+	err = db.QueryRow(q, args...).Scan(&contractBody.Title, &contractBody.Description, &contractBody.Amount, &contractBody.MustBeDone)
+
+	if err == sql.ErrNoRows {
+		return c.String(http.StatusNotFound, "Contract not found")
+	} else if err != nil {
+		log.Fatal(err)
+	}
+
+	contractEncoded, err := json.Marshal(contractBody)
+	supplierVerified := VerifySignature(offerQuery.SupplierSignature, supplier.Cert.String, contractEncoded)
+
+	if !supplierVerified {
+		return c.String(http.StatusBadRequest, "Bad Signature")
+	}
+
+	ib := sqlbuilder.NewInsertBuilder()
+	ib.InsertInto("offers")
+	ib.Cols("contract_id", "supplier_id", "supplier_signature", "comment", "created")
+	ib.Values(offerQuery.ContractID, sc.SupplierID, offerQuery.SupplierSignature, offerQuery.Comment, time.Now().Format(time.RFC3339))
+	q, args = ib.Build()
 
 	res, err := db.Exec(q, args...)
 	if err != nil {
@@ -635,11 +672,39 @@ type (
 )
 
 func (t SupplierAuthorizationToken) Authorize() (int64, error) {
-	return 1, nil
+	tokenSuppliersApi := GatewayURL + "/clients/token/"
+	res, err := http.Get(tokenSuppliersApi + string(t))
+
+	if err != nil {
+		log.Print(err)
+		return 0, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusOK {
+		idstr, err := ioutil.ReadAll(res.Body)
+		a, err := strconv.Atoi(string(idstr))
+		return int64(a), err
+	} else {
+		return 0, errors.New("Unauthorized")
+	}
 }
 
 func (t InvestorAuthorizationToken) Authorize() (int64, error) {
-	return 1, nil
+	tokenInvestorsApi := GatewayURL + "/investors/token/"
+	res, err := http.Get(tokenInvestorsApi + string(t))
+
+	if err != nil {
+		log.Print(err)
+		return 0, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusOK {
+		idstr, err := ioutil.ReadAll(res.Body)
+		a, err := strconv.Atoi(string(idstr))
+		return int64(a), err
+	} else {
+		return 0, errors.New("Unauthorized")
+	}
 }
 
 func ResponseHeaderMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -652,25 +717,31 @@ func ResponseHeaderMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 func SupplierAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var token SupplierAuthorizationToken
-		token = SupplierAuthorizationToken(c.Request().Header.Get("Authorization"))
+		var s string
+		fmt.Sscanf(c.Request().Header.Get("Authorization"), "Token %s", &s)
+		token = SupplierAuthorizationToken(s)
 		id, err := token.Authorize()
 		if err != nil {
 			return echo.ErrUnauthorized
 		}
-		sc := SupplierContext{c, id}
+		ID := sql.NullInt64{Int64: id, Valid: true}
+		sc := SupplierContext{c, ID}
 		return next(sc)
 	}
 }
 
 func InvestorAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		var token InvestorAuthorizationToken
-		token = InvestorAuthorizationToken(c.Request().Header.Get("Authorization"))
+		var token SupplierAuthorizationToken
+		var s string
+		fmt.Sscanf(c.Request().Header.Get("Authorization"), "Token %s", &s)
+		token = SupplierAuthorizationToken(s)
 		id, err := token.Authorize()
 		if err != nil {
 			return echo.ErrUnauthorized
 		}
-		sc := InvestorContext{c, id}
+		ID := sql.NullInt64{Int64: id, Valid: true}
+		sc := InvestorContext{c, ID}
 		return next(sc)
 	}
 }
