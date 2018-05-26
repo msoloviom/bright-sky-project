@@ -19,6 +19,11 @@ import (
 	"time"
 )
 
+type ECDSASignature struct {
+	R *big.Int
+	S *big.Int
+}
+
 func GenerateECKey(fn string) (key *ecdsa.PrivateKey) {
 	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
@@ -85,6 +90,30 @@ func GenerateCert(pub, priv interface{}, cert_signer *x509.Certificate, cn strin
 	ioutil.WriteFile("serial", []byte(strconv.Itoa(s+1)), 0644)
 }
 
+func VerifySignature(b64signature, pemcert string, data []byte) bool {
+	derSignature, err := base64.StdEncoding.DecodeString(b64signature)
+	if err != nil {
+		return false
+	}
+	sig := ECDSASignature{}
+	_, err = asn1.Unmarshal(derSignature, &sig)
+	if err != nil {
+		fmt.Print(err)
+		return false
+	}
+	hash := sha512.Sum384(data)
+	certBlock, rest := pem.Decode([]byte(pemcert))
+	if len(rest) > 0 {
+		return false
+	}
+	certObj, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return false
+	}
+	pubKey := certObj.PublicKey.(*ecdsa.PublicKey)
+	return ecdsa.Verify(pubKey, hash[:], sig.R, sig.S)
+}
+
 func main() {
 	switch os.Args[1] {
 	case "-g":
@@ -110,6 +139,9 @@ func main() {
 		}
 		key = os.Args[2]
 		data = os.Args[3]
+		//cert := "Han Solo.crt"
+		//certPem, _ := ioutil.ReadFile(cert)
+
 		log.Printf("Signing %s with key %s", data, key)
 		keyPem, err := ioutil.ReadFile(key)
 		if err != nil {
@@ -129,15 +161,29 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		sig := struct {
-			R *big.Int
-			S *big.Int
-		}{r, s}
+		sig := ECDSASignature{r, s}
 		sigDer, err := asn1.Marshal(sig)
 		if err != nil {
 			log.Fatal(err)
 		}
 		sigb64 := base64.StdEncoding.EncodeToString(sigDer)
+
 		fmt.Println(sigb64)
+		//fmt.Print(VerifySignature(string(sigb64), string(certPem), dataRaw))
+	case "-v":
+		certFile := os.Args[2]
+		//fmt.Println(certFile)
+		signatureFile := os.Args[3]
+		dataFile := os.Args[4]
+		//sig := ECDSASignature{}
+		//keyPem, err := ioutil.ReadFile("Han Solo.key")
+		certPem, _ := ioutil.ReadFile(certFile)
+		data, _ := ioutil.ReadFile(dataFile)
+		signature, _ := ioutil.ReadFile(signatureFile)
+		//fmt.Println(certPem)
+		//fmt.Println(data)
+		//fmt.Println(signature)
+		fmt.Print(VerifySignature(string(signature), string(certPem), data))
+
 	}
 }

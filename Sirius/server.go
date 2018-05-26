@@ -49,11 +49,12 @@ type Investor struct {
 	UserAbstract
 }
 
-const GatewayURL = "http://172.20.10.6:8000"
+const GatewayURL = "http://20.1.101.207:15672"
 
 // Load Supplier from the external api
 func (s *Supplier) Load(cache map[int64]UserAbstract) (err error) {
-	suppliersAPI := GatewayURL + "/clients/%d"
+	//suppliersAPI := GatewayURL + "/clients/%d"
+	suppliersAPI := "http://192.168.43.219:8191/api/clients/%d"
 	if !s.ID.Valid {
 		return nil
 	}
@@ -88,7 +89,8 @@ func (s *Supplier) Load(cache map[int64]UserAbstract) (err error) {
 
 // Load Investor from the external api
 func (s *Investor) Load(cache map[int64]UserAbstract) error {
-	investorsAPI := GatewayURL + "/investors/%d"
+	//investorsAPI := GatewayURL + "/investors/%d"
+	investorsAPI := "http://192.168.43.219:8193/api/investors/%d"
 	if !s.ID.Valid {
 		return nil
 	}
@@ -165,7 +167,6 @@ type Signature []byte
 
 type OfferAcceptionQuery struct {
 	OfferID           int64
-	ContractID        int64
 	InvestorSignature string
 }
 
@@ -185,8 +186,8 @@ type OfferQuery struct {
 }
 
 type ECDSASignature struct {
-	r big.Int
-	s big.Int
+	R *big.Int
+	S *big.Int
 }
 
 type InvestorContext struct {
@@ -354,6 +355,7 @@ func VerifySignature(b64signature, pemcert string, data []byte) bool {
 	sig := ECDSASignature{}
 	_, err = asn1.Unmarshal(derSignature, &sig)
 	if err != nil {
+		fmt.Print(err)
 		return false
 	}
 	hash := sha512.Sum384(data)
@@ -365,13 +367,14 @@ func VerifySignature(b64signature, pemcert string, data []byte) bool {
 	if err != nil {
 		return false
 	}
-	pubKey := certObj.PublicKey.(ecdsa.PublicKey)
-	return ecdsa.Verify(&pubKey, hash[:], &sig.r, &sig.s)
+	pubKey := certObj.PublicKey.(*ecdsa.PublicKey)
+	return ecdsa.Verify(pubKey, hash[:], sig.R, sig.S)
 }
 
 // UpdateContract - api controller for accepting an offer and finalizing contract creation
 func UpdateContract(c echo.Context) error {
 	ic := c.(InvestorContext)
+	contractID, _ := strconv.Atoi(c.Param("id"))
 
 	offerAcceptionQuery := new(OfferAcceptionQuery)
 	err := c.Bind(offerAcceptionQuery)
@@ -388,7 +391,7 @@ func UpdateContract(c echo.Context) error {
 	sb := sqlbuilder.NewSelectBuilder()
 	sb.Select("*")
 	sb.From("contracts")
-	sb.Where(sb.Equal("id", offerAcceptionQuery.ContractID), sb.Equal("investor_id", ic.InvestorID))
+	sb.Where(sb.Equal("id", contractID), sb.Equal("investor_id", ic.InvestorID))
 	q, args := sb.Build()
 
 	supplier := Supplier{}
@@ -405,12 +408,18 @@ func UpdateContract(c echo.Context) error {
 		log.Fatal(err)
 	}
 
-	sb.Select("supplier_signature")
+	investorsCache := make(map[int64]UserAbstract)
+	contract.Investor.Load(investorsCache)
+
+	sb = sqlbuilder.NewSelectBuilder()
+
+	sb.Select("supplier_id", "supplier_signature")
 	sb.From("offers")
 	sb.Where(sb.Equal("id", offerAcceptionQuery.OfferID), sb.Equal("contract_id", contract.ID))
 	q, args = sb.Build()
 	var supplierSignature string
-	err = db.QueryRow(q, args...).Scan(&supplierSignature)
+	var supplierID int64
+	err = db.QueryRow(q, args...).Scan(&supplierID, &supplierSignature)
 
 	if err == sql.ErrNoRows {
 		return c.String(http.StatusNotFound, "Offer not found")
@@ -419,14 +428,13 @@ func UpdateContract(c echo.Context) error {
 	}
 
 	contractToBeSigned := contract.GetEncoded()
-	//supplierVerified := VerifySignature(supplierSignature, contract.Supplier.Cert.String, contractToBeSigned)
 	investorVerified := VerifySignature(offerAcceptionQuery.InvestorSignature, contract.Investor.Cert.String, contractToBeSigned)
 
 	if investorVerified {
 		ub := sqlbuilder.NewUpdateBuilder()
 		ub.Update("contracts")
 		ub.Where(ub.Equal("id", contract.ID))
-		ub.Set(ub.Assign("supplier_signature", supplierSignature), ub.Assign("investor_signature", offerAcceptionQuery.InvestorSignature), ub.Assign("stage", 1))
+		ub.Set(ub.Assign("supplier_id", supplierID), ub.Assign("supplier_signature", supplierSignature), ub.Assign("investor_signature", offerAcceptionQuery.InvestorSignature), ub.Assign("stage", 1))
 		q, args := ub.Build()
 		res, err := db.Exec(q, args...)
 		if err != nil {
@@ -578,6 +586,7 @@ func CreateOffer(c echo.Context) error {
 	m := make(map[int64]UserAbstract)
 	err := supplier.Load(m)
 
+	print(supplier.Cert.String)
 	if err != nil {
 		log.Print(err)
 		return c.String(http.StatusBadGateway, "Supplier's certificate could not be loaded")
@@ -611,6 +620,8 @@ func CreateOffer(c echo.Context) error {
 	}
 
 	contractEncoded, err := json.Marshal(contractBody)
+	fmt.Printf("%v", contractEncoded)
+	fmt.Println(offerQuery.SupplierSignature)
 	supplierVerified := VerifySignature(offerQuery.SupplierSignature, supplier.Cert.String, contractEncoded)
 
 	if !supplierVerified {
@@ -672,14 +683,16 @@ type (
 )
 
 func (t SupplierAuthorizationToken) Authorize() (int64, error) {
-	tokenSuppliersApi := GatewayURL + "/clients/token/"
+	//tokenSuppliersApi := GatewayURL + "/clients/auth/"
+	tokenSuppliersApi := "http://192.168.43.219:8191/api/clients/auth/"
 	res, err := http.Get(tokenSuppliersApi + string(t))
-
+	//fmt.Print("111")
 	if err != nil {
 		log.Print(err)
 		return 0, err
 	}
 	defer res.Body.Close()
+
 	if res.StatusCode == http.StatusOK {
 		idstr, err := ioutil.ReadAll(res.Body)
 		a, err := strconv.Atoi(string(idstr))
@@ -690,7 +703,8 @@ func (t SupplierAuthorizationToken) Authorize() (int64, error) {
 }
 
 func (t InvestorAuthorizationToken) Authorize() (int64, error) {
-	tokenInvestorsApi := GatewayURL + "/investors/token/"
+	//tokenInvestorsApi := GatewayURL + "/investors/auth/"
+	tokenInvestorsApi := "http://192.168.43.219:8193/api/investors/auth/"
 	res, err := http.Get(tokenInvestorsApi + string(t))
 
 	if err != nil {
@@ -719,6 +733,7 @@ func SupplierAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		var token SupplierAuthorizationToken
 		var s string
 		fmt.Sscanf(c.Request().Header.Get("Authorization"), "Token %s", &s)
+		//log.Print("111")
 		token = SupplierAuthorizationToken(s)
 		id, err := token.Authorize()
 		if err != nil {
@@ -732,10 +747,11 @@ func SupplierAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 
 func InvestorAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		var token SupplierAuthorizationToken
+		var token InvestorAuthorizationToken
 		var s string
 		fmt.Sscanf(c.Request().Header.Get("Authorization"), "Token %s", &s)
-		token = SupplierAuthorizationToken(s)
+		//log.Print("856765765")
+		token = InvestorAuthorizationToken(s)
 		id, err := token.Authorize()
 		if err != nil {
 			return echo.ErrUnauthorized
