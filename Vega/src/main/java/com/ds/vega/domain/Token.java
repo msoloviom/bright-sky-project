@@ -2,29 +2,31 @@ package com.ds.vega.domain;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.springframework.data.annotation.Id;
-import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.redis.core.RedisHash;
 
 import java.util.Date;
 
-@Document(collection = "token")
+@RedisHash("token")
+//@Document(collection = "token")
 public class Token {
 
     @Id
     @JsonProperty("id")
-    private String _id;
+    private String id;
 
     private String token;
 
     private Long clientId;
 
+    //@DateTimeFormat(pattern = "yyyy-MM-dd")
     private Date createdDt;
 
-    public String get_id() {
-        return _id;
+    public String getId() {
+        return id;
     }
 
-    public void set_id(String _id) {
-        this._id = _id;
+    public void setId(String id) {
+        this.id = id;
     }
 
     public String getToken() {

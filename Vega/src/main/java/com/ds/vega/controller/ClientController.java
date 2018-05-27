@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Date;
 import java.util.List;
 
 import static org.springframework.util.CollectionUtils.isEmpty;
@@ -44,7 +46,7 @@ public class ClientController {
 
     @GetMapping(value = "/clients/{id}")
     public ResponseEntity<Client> getClientById(@PathVariable("id") String id) {
-        Client client = clientService.getClientById(id);
+        Client client = clientService.getClientById(id).orElse(null);
         if (client == null) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         } else {
@@ -57,6 +59,13 @@ public class ClientController {
         Client client = clientService.insertClient(clientRequest);
         return new ResponseEntity<>(new PostResource(client.getId(), SUCCESSFULLY_CREATED),
                 HttpStatus.CREATED);
+
+    }
+
+    @DeleteMapping(value = "/clients/{id}")
+    public HttpEntity<PostResource> deleteClient(@PathVariable String id) {
+        clientService.deleteClientById(id);
+        return new ResponseEntity<>(HttpStatus.OK);
     }
 
 
@@ -82,8 +91,16 @@ public class ClientController {
 
     @PostMapping(value = "/clients/auth/tokens")
     public HttpEntity<PostResource> saveToken(@RequestBody Token tokenReq) {
+        tokenReq.setCreatedDt(new Date());
         tokenService.insertToken(tokenReq);
         return new ResponseEntity<>(HttpStatus.CREATED);
     }
+
+    @DeleteMapping(value = "/clients/auth/tokens/{id}")
+    public HttpEntity<PostResource> saveToken(@PathVariable String id) {
+        tokenService.deleteTokenById(id);
+        return new ResponseEntity<>(HttpStatus.OK);
+    }
+
 
 }

@@ -3,11 +3,12 @@ package com.ds.vega.service;
 import com.ds.vega.domain.Client;
 
 import java.util.List;
+import java.util.Optional;
 
 public interface ClientService {
 
-    Client getClientById(String id);
+    Optional<Client> getClientById(String id);
     List<Client> getAllClients();
     Client insertClient(Client client);
-
+    void deleteClientById(String id);
 }

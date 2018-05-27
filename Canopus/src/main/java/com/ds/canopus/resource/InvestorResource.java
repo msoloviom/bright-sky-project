@@ -1,15 +1,6 @@
-package com.ds.vega.domain;
+package com.ds.canopus.resource;
 
-import org.springframework.data.annotation.Id;
-import org.springframework.data.redis.core.RedisHash;
-
-import java.io.Serializable;
-
-@RedisHash("client")
-//@Document(collection = "client")
-public class Client implements Serializable {
-
-    @Id
+public class InvestorResource {
     private String id;
 
     private String name;

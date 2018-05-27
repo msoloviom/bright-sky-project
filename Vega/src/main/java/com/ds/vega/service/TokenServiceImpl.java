@@ -19,7 +19,12 @@ public class TokenServiceImpl implements TokenService {
 
     @Override
     public Token getTokenByTokenValue(String token) {
-        Token foundToken = tokenRepository.findTokenByToken(token);
+        List<Token> tokens = tokenRepository.findAll();
+        Token foundToken = tokens.stream()
+                .filter(token1 -> token.equals(token1.getToken()))
+                .findAny()
+                .orElse(null);
+
         if (foundToken != null) {
             Date createdDt = foundToken.getCreatedDt();
             LocalDate date = createdDt.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
@@ -39,6 +44,11 @@ public class TokenServiceImpl implements TokenService {
 
     @Override
     public Token insertToken(Token token) {
-        return tokenRepository.insert(token);
+        return tokenRepository.save(token);
+    }
+
+    @Override
+    public void deleteTokenById(String id) {
+        tokenRepository.deleteById(id);
     }
 }

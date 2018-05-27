@@ -11,4 +11,6 @@ public interface TokenService {
     List<Token> getAllTokens();
 
     Token insertToken(Token token);
+
+    void deleteTokenById(String id);
 }

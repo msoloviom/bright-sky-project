@@ -3,6 +3,7 @@ package com.ds.canopus.controller;
 import com.ds.canopus.domain.Investor;
 import com.ds.canopus.domain.Token;
 import com.ds.canopus.repository.TokenRepository;
+import com.ds.canopus.resource.InvestorResource;
 import com.ds.canopus.resource.PostResource;
 import com.ds.canopus.service.InvestorService;
 import com.ds.canopus.service.TokenService;
@@ -47,12 +48,19 @@ public class InvestorController {
     }
 
     @GetMapping("/investors/{id}")
-    public HttpEntity<Investor> getInvestorById(@PathVariable Long id) {
+    public HttpEntity<InvestorResource> getInvestorById(@PathVariable Long id) {
         Investor investor = investorService.getInvestorById(id);
+        System.out.println("\n*** This instance is picked for a call! " +
+                "******************************************\n");
+
         if (investor == null) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         } else {
-            return new ResponseEntity<>(investor, HttpStatus.OK);
+            InvestorResource investorResource = new InvestorResource();
+            investorResource.setId(investor.getId().toString());
+            investorResource.setName(investor.getName());
+            investorResource.setCert(investor.getCert());
+            return new ResponseEntity<>(investorResource, HttpStatus.OK);
         }
     }
 
@@ -74,7 +82,9 @@ public class InvestorController {
 
     @GetMapping("/investors/auth/tokens")
     public HttpEntity<List<Token>> getInvestorTokens() {
+
         List<Token> tokens = tokenRepository.findAll();
+
         if (isEmpty(tokens)) {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         } else {

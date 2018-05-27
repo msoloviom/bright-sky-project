@@ -1,12 +1,15 @@
 package com.ds.vega.repository;
 
 import com.ds.vega.domain.Client;
-import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.data.repository.CrudRepository;
+import org.springframework.stereotype.Repository;
 
 import java.util.List;
 
-public interface ClientRepository extends MongoRepository<Client, String> {
-    Client findClientById(String id);
+@Repository
+public interface ClientRepository
+        extends CrudRepository<Client, String> {
+        //extends MongoRepository<Client, String> {
     List<Client> findAll();
-    Client insert(Client client);
+    void deleteById(String id);
 }
